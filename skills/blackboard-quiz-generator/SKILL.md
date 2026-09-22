@@ -25,13 +25,19 @@ Script: `scripts/bbquiz.py` (Python 3.9+). Default target is **Blackboard Ultra*
    The report lists each question as `[ ok ]` with its detected type or `[FAIL]` with
    the reason and the input line number. Fix the input (not the output) until every
    question is ok. Common fixes are in `reference/input-format.md`.
-3. **Write the file:** `python3 scripts/bbquiz.py INPUT -o "Quiz Name.txt"`
-   (add `--target original` for an Original course view).
+3. **Write the file.** Two output formats; ask which the user wants if unclear:
+   - **Question bank package (preferred for Ultra):**
+     `python3 scripts/bbquiz.py INPUT --format pool --points 0.5 --name "Bank name" -o "Bank name.zip"`
+     A zip that Ultra's **Manage banks > + > Import > from file** accepts (the same package
+     Original's Pools page exports). Points per question are stored in the package.
+   - **Tab-delimited text:** `python3 scripts/bbquiz.py INPUT -o "Quiz Name.txt"`
+     for a test's **Upload questions from file**. Add `--target original` for an Original
+     course view.
    The script writes nothing if any question is invalid; use `--allow-invalid` only if
    the user explicitly wants a partial file.
-4. **Hand over:** give the user the `.txt` path plus the upload steps in
-   `reference/ultra-upload-steps.md`. Remind them that uploaded questions default to
-   zero points and that Blackboard skips (does not fix) any row it cannot read.
+4. **Hand over:** give the user the output path plus the upload steps in
+   `reference/ultra-upload-steps.md`. For text uploads remind them that questions
+   default to zero points; Blackboard skips (does not fix) any row it cannot read.
 
 Always read the `--check` report before delivering, and tell the user the question
 count and types that were written. Show the user any question the script rejected,
@@ -82,8 +88,11 @@ Algonquin tool still works.
 - Matching pairs must be one-to-one; a pair with an empty side is rejected.
 - No images or text-only blocks exist in the upload format: add them in the Ultra
   editor after upload.
-- Output conventions copied from Blackboard's own sample file: UTF-8 without BOM,
+- Text output conventions copied from Blackboard's own sample file: UTF-8 without BOM,
   Windows line endings, one question per line, no blank lines, no trailing blank line.
+- Pool packages carry MC, MA, TF, essay, short answer, fill in the blank (single and
+  multiple), matching, numeric, ordering and jumbled sentence. File response, opinion
+  scale and quiz bowl exist only in the text format.
 - Recommended batch size is 250 questions per file (500 for Original); the script warns.
 
 ## Reference files

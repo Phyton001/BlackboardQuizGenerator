@@ -222,6 +222,91 @@ class DocxTests(unittest.TestCase):
                 self.assertEqual(fh.read(), b"ESS\tLife story.\r\nTF\tThe sky is blue.\ttrue")
 
 
+class PoolPackageTests(unittest.TestCase):
+    def build(self, text, target="ultra", points=0.5):
+        import io, zipfile
+        import xml.etree.ElementTree as ET
+        qs = QuizParser().parse(text)
+        data, errs = bbquiz.pool_package(qs, "Test Pool", points, target)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        names = sorted(z.namelist())
+        self.assertEqual(names, [".bb-package-info", "imsmanifest.xml", "res00001.dat", "res00002.dat"])
+        manifest = ET.fromstring(z.read("imsmanifest.xml"))
+        pool = ET.fromstring(z.read("res00001.dat"))
+        return qs, errs, manifest, pool
+
+    def test_ultra_types_produce_items_with_correct_metadata(self):
+        qs, errs, manifest, pool = self.build(read("all_types_ultra.txt"))
+        self.assertEqual(errs, {})
+        items = pool.findall(".//item")
+        self.assertEqual(len(items), 9)
+        types = [i.find("itemmetadata/bbmd_questiontype").text for i in items]
+        self.assertEqual(types, ["Multiple Choice", "Multiple Answer", "True/False", "Essay", "Essay",
+                                 "Fill in the Blank", "Fill in the Blank Plus", "Matching", "Numeric"])
+        self.assertTrue(all(i.find("itemmetadata/qmd_absolutescore_max").text.startswith("0.5")
+                            for i in items))
+        res = manifest.findall("{*}resources/{*}resource")
+        self.assertEqual([r.get("type") for r in res],
+                         ["assessment/x-bb-qti-pool", "resource/x-mhhe-course-cx"])
+        self.assertEqual(res[0].get("{http://www.blackboard.com/content-packaging/}title"), "Test Pool")
+
+    def test_multiple_choice_key_points_at_the_right_option(self):
+        qs, errs, manifest, pool = self.build("1. Q?\na) 4\n*b) 5\nc) 6")
+        item = pool.find(".//item")
+        labels = item.findall(".//response_label")
+        texts = [l.find(".//mat_formattedtext").text for l in labels]
+        self.assertEqual(texts, ["4", "5", "6"])
+        correct = item.find("resprocessing/respcondition[@title='correct']/conditionvar/varequal").text
+        self.assertEqual(correct, labels[1].get("ident"))
+        # feedback/solution blocks exist for every option
+        self.assertEqual(len(item.findall("itemfeedback")), 2 + 3)
+
+    def test_true_false_and_numeric_conditions(self):
+        qs, errs, manifest, pool = self.build("1. Sky is blue.\nFalse\n\nnum 2. Birds?\n10,000 +/- 1000")
+        tf, num = pool.findall(".//item")
+        self.assertEqual(tf.find("resprocessing/respcondition[@title='correct']/conditionvar/varequal").text, "false")
+        cv = num.find("resprocessing/respcondition/conditionvar")
+        self.assertEqual(cv.find("vargte").text, "9000.0")
+        self.assertEqual(cv.find("varlte").text, "11000.0")
+        self.assertEqual(cv.find("varequal").text, "10000.0")
+
+    def test_fib_plus_maps_variables_to_answers(self):
+        qs, errs, manifest, pool = self.build("blanks 1. The [a] and [b].\na. x | y\nb. z")
+        item = pool.find(".//item")
+        self.assertEqual([r.get("ident") for r in item.findall(".//response_str")], ["a", "b"])
+        ors = item.findall("resprocessing/respcondition[@title='correct']/conditionvar/and/or")
+        self.assertEqual([[v.text for v in o] for o in ors], [["x", "y"], ["z"]])
+
+    def test_matching_rows_and_right_column(self):
+        qs, errs, manifest, pool = self.build("match 1. M\na. 1 / one\nb. 2 / two")
+        item = pool.find(".//item")
+        self.assertEqual(len(item.findall(".//flow[@class='RESPONSE_BLOCK']/flow/response_lid")), 2)
+        right = [m.text for m in item.findall(".//flow[@class='RIGHT_MATCH_BLOCK']//mat_formattedtext")]
+        self.assertEqual(right, ["one", "two"])
+        self.assertEqual(len(item.findall("resprocessing/respcondition")), 3)
+
+    def test_original_only_types_rejected_for_ultra_but_written_for_original(self):
+        text = read("original_only_types.txt")
+        qs, errs, manifest, pool = self.build(text, "ultra")
+        self.assertEqual(sorted(errs), [0, 2, 3, 4, 5])
+        qs, errs, manifest, pool = self.build(text, "original")
+        # file response, opinion and quiz bowl have no pool writer
+        self.assertEqual(sorted(errs), [2, 3, 5])
+        types = [i.find("itemmetadata/bbmd_questiontype").text for i in pool.findall(".//item")]
+        self.assertEqual(types, ["Ordering", "Short Response", "Jumbled Sentence"])
+
+    def test_pool_cli_writes_zip(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "bank.zip")
+            r = subprocess.run([sys.executable, SCRIPT, os.path.join(EXAMPLES, "all_types_ultra.txt"),
+                                "--format", "pool", "--points", "0.5", "-o", out],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            import zipfile
+            self.assertTrue(zipfile.is_zipfile(out))
+            self.assertIn("format: pool", r.stderr)
+
+
 class CliTests(unittest.TestCase):
     def run_cli(self, *args):
         return subprocess.run([sys.executable, SCRIPT, *args], capture_output=True, text=True)

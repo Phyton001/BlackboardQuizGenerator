@@ -18,8 +18,13 @@ any later version. See the LICENSE file at the repository root.
 
 Usage
 -----
-    bbquiz.py INPUT [-o OUTPUT] [--target ultra|original]
-                    [--check] [--allow-invalid] [--bom] [--lf] [--name NAME]
+    bbquiz.py INPUT [-o OUTPUT] [--target ultra|original] [--format txt|pool]
+                    [--points N] [--check] [--allow-invalid] [--bom] [--lf] [--name NAME]
+
+--format txt (default) writes the tab-delimited file for a test's "Upload
+questions from file". --format pool writes the zip package that the Question
+Banks page imports ("Import > from file"), the same package Original's Pools
+page exports.
 
 INPUT is a .txt file in the question format described in
 reference/input-format.md, or a Word .docx (read directly, with Word's
@@ -598,6 +603,416 @@ def blackboard_record(q: Question, target: str) -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# Question pool package writer (Blackboard "x-bb-qti-pool" export format)
+#
+# This is the zip that Original's Pools page exports and that Ultra's
+# Question Banks page imports ("Import > from file"). The structure follows
+# Blackboard's own exports as documented by two MIT-licensed tools that
+# generate it: toastedcrumpets/BlackboardQuizMaker and bristol-d/bbquiz.
+# --------------------------------------------------------------------------
+import uuid
+import zipfile
+import xml.etree.ElementTree as ET
+
+POOL_TYPE_NAMES = {
+    QType.MC: "Multiple Choice", QType.MA: "Multiple Answer", QType.TF: "True/False",
+    QType.ESSAY: "Essay", QType.SHORT: "Short Response", QType.FIB: "Fill in the Blank",
+    QType.FIB_PLUS: "Fill in the Blank Plus", QType.MATCH: "Matching", QType.NUM: "Numeric",
+    QType.ORDER: "Ordering", QType.JUMBLED: "Jumbled Sentence",
+}
+BB_NS = "http://www.blackboard.com/content-packaging/"
+XML_NS = "http://www.w3.org/XML/1998/namespace"
+
+
+class PoolWriter:
+    def __init__(self, title: str, points: float = 1.0) -> None:
+        self.title = title
+        self.points = points
+        self._id = 1000000
+        self.root = ET.Element("questestinterop")
+        assessment = ET.SubElement(self.root, "assessment", title=title)
+        self._metadata(assessment, "Assessment")
+        rubric = ET.SubElement(assessment, "rubric", view="All")
+        self._formatted(ET.SubElement(rubric, "flow_mat", {"class": "Block"}), "")
+        pm = ET.SubElement(assessment, "presentation_material")
+        self._formatted(ET.SubElement(pm, "flow_mat", {"class": "Block"}), "")
+        self.section = ET.SubElement(assessment, "section")
+        self._metadata(self.section, "Section")
+        self.count = 0
+
+    # -- helpers ----------------------------------------------------------------
+    def _next_id(self) -> str:
+        self._id += 1
+        return f"_{self._id}_1"
+
+    def _metadata(self, node, asitype: str, qtype: str = "Multiple Choice",
+                  partial: str = "false", scoremax: Optional[str] = None,
+                  numbertype: str = "none", negative: str = "N") -> None:
+        md = ET.SubElement(node, asitype.lower() + "metadata")
+        for k, v in (
+            ("bbmd_asi_object_id", self._next_id()), ("bbmd_asitype", asitype),
+            ("bbmd_assessmenttype", "Pool"), ("bbmd_sectiontype", "Subsection"),
+            ("bbmd_questiontype", qtype), ("bbmd_is_from_cartridge", "false"),
+            ("bbmd_is_disabled", "false"), ("bbmd_negative_points_ind", negative),
+            ("bbmd_canvas_fullcrdt_ind", "false"), ("bbmd_all_fullcredit_ind", "false"),
+            ("bbmd_numbertype", numbertype), ("bbmd_partialcredit", partial),
+            ("bbmd_orientationtype", "vertical"), ("bbmd_is_extracredit", "false"),
+            ("qmd_absolutescore_max", scoremax if scoremax is not None else "0"),
+            ("qmd_weighting", "0"), ("qmd_instructornotes", ""),
+        ):
+            ET.SubElement(md, k).text = v
+
+    @staticmethod
+    def _formatted(node, text: str):
+        material = ET.SubElement(node, "material")
+        ext = ET.SubElement(material, "mat_extension")
+        ET.SubElement(ext, "mat_formattedtext", type="HTML").text = text
+        return material
+
+    def _text_block(self, node, text: str):
+        self._formatted(ET.SubElement(node, "flow_mat", {"class": "FORMATTED_TEXT_BLOCK"}), text)
+
+    def _feedback(self, item, ident: str, text: str = "") -> None:
+        fb = ET.SubElement(item, "itemfeedback", ident=ident, view="All")
+        outer = ET.SubElement(fb, "flow_mat", {"class": "Block"})
+        self._text_block(outer, text)
+
+    def _solution(self, item, ident: str, text: str = "") -> None:
+        fb = ET.SubElement(item, "itemfeedback", ident=ident, view="All")
+        sol = ET.SubElement(fb, "solution", view="All", feedbackstyle="Complete")
+        sm = ET.SubElement(sol, "solutionmaterial")
+        outer = ET.SubElement(sm, "flow_mat", {"class": "Block"})
+        self._text_block(outer, text)
+
+    def _item(self, q: Question, qtype: str, **md):
+        self.count += 1
+        item = ET.SubElement(self.section, "item", title=f"Question {self.count}", maxattempts="0")
+        self._metadata(item, "Item", qtype, scoremax=f"{self.points:.15f}", **md)
+        presentation = ET.SubElement(item, "presentation")
+        block = ET.SubElement(presentation, "flow", {"class": "Block"})
+        qb = ET.SubElement(block, "flow", {"class": "QUESTION_BLOCK"})
+        self._formatted(ET.SubElement(qb, "flow", {"class": "FORMATTED_TEXT_BLOCK"}), q.text)
+        rb = ET.SubElement(block, "flow", {"class": "RESPONSE_BLOCK"})
+        rp = ET.SubElement(item, "resprocessing", scoremodel="SumOfScores")
+        ET.SubElement(ET.SubElement(rp, "outcomes"), "decvar", varname="SCORE", vartype="Decimal",
+                      defaultval="0", minvalue="0", maxvalue=f"{self.points:.5f}")
+        return item, block, rb, rp
+
+    @staticmethod
+    def _condition(rp, title: Optional[str] = None):
+        rc = ET.SubElement(rp, "respcondition", **({"title": title} if title else {}))
+        return rc, ET.SubElement(rc, "conditionvar")
+
+    @staticmethod
+    def _score(rc, value: str, feedback: str) -> None:
+        ET.SubElement(rc, "setvar", variablename="SCORE", action="Set").text = value
+        ET.SubElement(rc, "displayfeedback", linkrefid=feedback, feedbacktype="Response")
+
+    def _incorrect(self, rp) -> None:
+        rc, cv = self._condition(rp, "incorrect")
+        ET.SubElement(cv, "other")
+        self._score(rc, "0", "incorrect")
+
+    def _choice_labels(self, parent, texts: list, shuffle: str = "Yes") -> list:
+        ids = []
+        for t in texts:
+            fl = ET.SubElement(parent, "flow_label", {"class": "Block"})
+            ident = uuid.uuid4().hex
+            ids.append(ident)
+            rl = ET.SubElement(fl, "response_label", ident=ident, shuffle=shuffle,
+                               rarea="Ellipse", rrange="Exact")
+            self._text_block(rl, t)
+        return ids
+
+    # -- question types -----------------------------------------------------------
+    def add(self, q: Question) -> None:
+        handler = {
+            QType.MC: self._mc, QType.MA: self._ma, QType.TF: self._tf, QType.ESSAY: self._essay,
+            QType.SHORT: self._short, QType.FIB: self._fib, QType.FIB_PLUS: self._fib_plus,
+            QType.MATCH: self._match, QType.NUM: self._num, QType.ORDER: self._order,
+            QType.JUMBLED: self._jumbled,
+        }.get(q.type)
+        if handler is None:
+            raise ValueError(f"{q.type.value} questions cannot be written to a question pool "
+                             "package; use the tab-delimited text format for them.")
+        handler(q)
+
+    def _mc(self, q: Question) -> None:
+        item, block, rb, rp = self._item(q, "Multiple Choice")
+        lid = ET.SubElement(rb, "response_lid", ident="response", rcardinality="Single", rtiming="No")
+        rc_ = ET.SubElement(lid, "render_choice", shuffle="Yes", minnumber="0", maxnumber="0")
+        ids = self._choice_labels(rc_, [a.text for a in q.answers])
+        correct = ids[[a.correct for a in q.answers].index(True)]
+        rc, cv = self._condition(rp, "correct")
+        ET.SubElement(cv, "varequal", respident="response", case="No").text = correct
+        self._score(rc, "SCORE.max", "correct")
+        self._incorrect(rp)
+        for ident in ids:
+            rc, cv = self._condition(rp)
+            ET.SubElement(cv, "varequal", respident=ident, case="No")
+            self._score(rc, "100" if ident == correct else "0", ident)
+        self._feedback(item, "correct")
+        self._feedback(item, "incorrect")
+        for ident in ids:
+            self._solution(item, ident)
+
+    def _ma(self, q: Question) -> None:
+        item, block, rb, rp = self._item(q, "Multiple Answer")
+        lid = ET.SubElement(rb, "response_lid", ident="response", rcardinality="Multiple", rtiming="No")
+        rc_ = ET.SubElement(lid, "render_choice", shuffle="Yes", minnumber="0", maxnumber="0")
+        ids = self._choice_labels(rc_, [a.text for a in q.answers])
+        rc, cv = self._condition(rp, "correct")
+        and_ = ET.SubElement(cv, "and")
+        for ident, a in zip(ids, q.answers):
+            parent = and_ if a.correct else ET.SubElement(and_, "not")
+            ET.SubElement(parent, "varequal", respident="response", case="No").text = ident
+        self._score(rc, "SCORE.max", "correct")
+        self._incorrect(rp)
+        self._feedback(item, "correct")
+        self._feedback(item, "incorrect")
+        for ident in ids:
+            self._solution(item, ident)
+
+    def _tf(self, q: Question) -> None:
+        item, block, rb, rp = self._item(q, "True/False")
+        lid = ET.SubElement(rb, "response_lid", ident="response", rcardinality="Single", rtiming="No")
+        rc_ = ET.SubElement(lid, "render_choice", shuffle="No", minnumber="0", maxnumber="0")
+        fl = ET.SubElement(rc_, "flow_label", {"class": "Block"})
+        for word in ("true", "false"):
+            rl = ET.SubElement(fl, "response_label", ident=word, shuffle="Yes", rarea="Ellipse", rrange="Exact")
+            fm = ET.SubElement(rl, "flow_mat", {"class": "Block"})
+            mat = ET.SubElement(fm, "material")
+            ET.SubElement(mat, "mattext", charset="us-ascii", texttype="text/plain").text = word
+        rc, cv = self._condition(rp, "correct")
+        ET.SubElement(cv, "varequal", respident="response", case="No").text = (
+            "true" if q.answers[0].correct else "false")
+        self._score(rc, "SCORE.max", "correct")
+        self._incorrect(rp)
+        self._feedback(item, "correct")
+        self._feedback(item, "incorrect")
+
+    def _text_response(self, q: Question, qtype: str, rows: str) -> None:
+        item, block, rb, rp = self._item(q, qtype)
+        rs = ET.SubElement(rb, "response_str", ident="response", rcardinality="Single", rtiming="No")
+        ET.SubElement(rs, "render_fib", charset="us-ascii", encoding="UTF_8", rows=rows, columns="127",
+                      maxchars="0", prompt="Box", fibtype="String", minnumber="0", maxnumber="0")
+        rc, cv = self._condition(rp, "correct")
+        self._score(rc, "SCORE.max", "correct")
+        self._incorrect(rp)
+        self._feedback(item, "correct")
+        self._feedback(item, "incorrect")
+        self._solution(item, "solution", q.sample)
+
+    def _essay(self, q: Question) -> None:
+        self._text_response(q, "Essay", "5")
+
+    def _short(self, q: Question) -> None:
+        self._text_response(q, "Short Response", "3")
+
+    def _fib(self, q: Question) -> None:
+        item, block, rb, rp = self._item(q, "Fill in the Blank")
+        rs = ET.SubElement(rb, "response_str", ident="response", rcardinality="Single", rtiming="No")
+        ET.SubElement(rs, "render_fib", charset="us-ascii", encoding="UTF_8", rows="0", columns="0",
+                      maxchars="0", prompt="Box", fibtype="String", minnumber="0", maxnumber="0")
+        rc, cv = self._condition(rp, "correct")
+        or_ = ET.SubElement(cv, "or")
+        for a in q.answers:
+            ET.SubElement(or_, "varequal", respident="response", case="No").text = a.text
+        self._score(rc, "SCORE.max", "correct")
+        self._incorrect(rp)
+        self._feedback(item, "correct")
+        self._feedback(item, "incorrect")
+
+    def _fib_plus(self, q: Question) -> None:
+        item, block, rb, rp = self._item(q, "Fill in the Blank Plus")
+        variables = []
+        for a in q.answers:
+            if a.var not in variables:
+                variables.append(a.var)
+        for v in variables:
+            rs = ET.SubElement(rb, "response_str", ident=v, rcardinality="Single", rtiming="No")
+            ET.SubElement(rs, "render_fib", charset="us-ascii", encoding="UTF_8", rows="0", columns="0",
+                          maxchars="0", prompt="Box", fibtype="String", minnumber="0", maxnumber="0")
+        rc, cv = self._condition(rp, "correct")
+        and_ = ET.SubElement(cv, "and")
+        for v in variables:
+            or_ = ET.SubElement(and_, "or")
+            for a in q.answers:
+                if a.var == v:
+                    ET.SubElement(or_, "varequal", respident=v, case="No").text = a.text
+        self._score(rc, "SCORE.max", "correct")
+        self._incorrect(rp)
+        self._feedback(item, "correct")
+        self._feedback(item, "incorrect")
+
+    def _num(self, q: Question) -> None:
+        item, block, rb, rp = self._item(q, "Numeric")
+        rn = ET.SubElement(rb, "response_num", ident="response", rcardinality="Single", rtiming="No")
+        ET.SubElement(rn, "render_fib", charset="us-ascii", encoding="UTF_8", rows="0", columns="0",
+                      maxchars="0", prompt="Box", fibtype="Decimal", minnumber="0", maxnumber="0")
+        answer = float(q.answers[0].text.replace(",", ""))
+        tol = float((q.tolerance or "0").replace(",", ""))
+        rc, cv = self._condition(rp, uuid.uuid4().hex)
+        ET.SubElement(cv, "vargte", respident="response").text = repr(answer - tol)
+        ET.SubElement(cv, "varlte", respident="response").text = repr(answer + tol)
+        ET.SubElement(cv, "varequal", respident="response", case="No").text = repr(answer)
+        ET.SubElement(rc, "displayfeedback", linkrefid="correct", feedbacktype="Response")
+        self._incorrect(rp)
+        self._feedback(item, "correct")
+        self._feedback(item, "incorrect")
+
+    def _order(self, q: Question) -> None:
+        import random
+        item, block, rb, rp = self._item(q, "Ordering", partial="true", numbertype="letter_lower")
+        lid = ET.SubElement(rb, "response_lid", ident="response", rcardinality="Ordered", rtiming="No")
+        rc_ = ET.SubElement(lid, "render_choice", shuffle="No", minnumber="0", maxnumber="0")
+        ids = [uuid.uuid4().hex for _ in q.answers]
+        display = list(range(len(ids)))
+        random.shuffle(display)
+        for i in display:
+            fl = ET.SubElement(rc_, "flow_label", {"class": "Block"})
+            rl = ET.SubElement(fl, "response_label", ident=ids[i], shuffle="Yes", rarea="Ellipse", rrange="Exact")
+            self._text_block(rl, q.answers[i].text)
+        rc, cv = self._condition(rp, "correct")
+        and_ = ET.SubElement(cv, "and")
+        for ident in ids:
+            ET.SubElement(and_, "varequal", respident="response", case="No").text = ident
+        self._score(rc, "SCORE.max", "correct")
+        self._incorrect(rp)
+        self._feedback(item, "correct")
+        self._feedback(item, "incorrect")
+
+    def _match(self, q: Question) -> None:
+        item, block, rb, rp = self._item(q, "Matching", partial="true", numbertype="letter_upper", negative="Q")
+        n = len(q.answers)
+        row_ids, choice_ids = [], []
+        for a in q.answers:
+            row = ET.SubElement(rb, "flow", {"class": "Block"})
+            rid = uuid.uuid4().hex
+            row_ids.append(rid)
+            lid = ET.SubElement(row, "response_lid", ident=rid, rcardinality="Single", rtiming="No")
+            rc_ = ET.SubElement(lid, "render_choice", shuffle="Yes", minnumber="0", maxnumber="0")
+            fl = ET.SubElement(rc_, "flow_label", {"class": "Block"})
+            ids = []
+            for _ in q.answers:
+                cid = uuid.uuid4().hex
+                ids.append(cid)
+                ET.SubElement(fl, "response_label", ident=cid, shuffle="Yes", rarea="Ellipse", rrange="Exact")
+            choice_ids.append(ids)
+            self._formatted(ET.SubElement(row, "flow", {"class": "FORMATTED_TEXT_BLOCK"}), a.text)
+        right = ET.SubElement(block, "flow", {"class": "RIGHT_MATCH_BLOCK"})
+        for a in q.answers:
+            r = ET.SubElement(right, "flow", {"class": "Block"})
+            self._formatted(ET.SubElement(r, "flow", {"class": "FORMATTED_TEXT_BLOCK"}), a.match or "")
+        for i in range(n):
+            rc, cv = self._condition(rp)
+            ET.SubElement(cv, "varequal", respident=row_ids[i], case="No").text = choice_ids[i][i]
+            ET.SubElement(rc, "setvar", PartialCreditPercent="SCORE", action="Set").text = f"{100 / n:.2f}"
+            ET.SubElement(rc, "setvar", NegativeCreditPercent="SCORE", action="Set").text = "0.00"
+            ET.SubElement(rc, "displayfeedback", linkrefid="correct", feedbacktype="Response")
+        self._incorrect(rp)
+        self._feedback(item, "correct")
+        self._feedback(item, "incorrect")
+
+    def _jumbled(self, q: Question) -> None:
+        item, block, rb, rp = self._item(q, "Jumbled Sentence")
+        variables = []
+        for a in q.answers:
+            for v in (a.var or "").split():
+                if v not in variables:
+                    variables.append(v)
+        option_ids = [uuid.uuid4().hex for _ in q.answers]
+        for v in variables:
+            lid = ET.SubElement(rb, "response_lid", ident=v, rcardinality="Single", rtiming="No")
+            rc_ = ET.SubElement(lid, "render_choice", shuffle="Yes", minnumber="0", maxnumber="0")
+            fl = ET.SubElement(rc_, "flow_label", {"class": "Block"})
+            for ident, a in zip(option_ids, q.answers):
+                rl = ET.SubElement(fl, "response_label", ident=ident, shuffle="Yes", rarea="Ellipse", rrange="Exact")
+                fm = ET.SubElement(rl, "flow_mat", {"class": "Block"})
+                mat = ET.SubElement(fm, "material")
+                ET.SubElement(mat, "mattext", charset="us-ascii", texttype="text/plain").text = a.text
+        rc, cv = self._condition(rp, "correct")
+        and_ = ET.SubElement(cv, "and")
+        for v in variables:
+            for ident, a in zip(option_ids, q.answers):
+                if v in (a.var or "").split():
+                    ET.SubElement(and_, "varequal", respident=v, case="No").text = ident
+                    break
+        self._score(rc, "SCORE.max", "correct")
+        self._incorrect(rp)
+        self._feedback(item, "correct")
+        self._feedback(item, "incorrect")
+
+    # -- packaging --------------------------------------------------------------
+    def package(self) -> bytes:
+        import io
+        decl = '<?xml version="1.0" encoding="UTF-8"?>\n'
+        pool_xml = decl + ET.tostring(self.root, encoding="unicode")
+        context = ET.Element("parentContextInfo")
+        ET.SubElement(context, "parentContextId").text = "IMPORT"
+        context_xml = decl + ET.tostring(context, encoding="unicode")
+        ET.register_namespace("bb", BB_NS)
+        manifest = ET.Element("manifest", identifier="man00001")
+        ET.SubElement(manifest, "organizations")
+        resources = ET.SubElement(manifest, "resources")
+        for ident, rtype in (("res00001", "assessment/x-bb-qti-pool"),
+                             ("res00002", "resource/x-mhhe-course-cx")):
+            r = ET.SubElement(resources, "resource", identifier=ident, type=rtype)
+            r.set(f"{{{XML_NS}}}base", ident)
+            r.set(f"{{{BB_NS}}}file", ident + ".dat")
+            r.set(f"{{{BB_NS}}}title", self.title)
+        manifest_xml = decl + ET.tostring(manifest, encoding="unicode")
+        info = "\n".join((
+            "#Bb PackageInfo Property File",
+            "cx.package.info.version=6.0",
+            "cx.config.operation=blackboard.apps.cx.CxConfig$Operation\\:EXPORT",
+            "cx.config.course.id=IMPORT",
+            "cx.config.package.identifier=" + uuid.uuid4().hex,
+            "cx.config.file.references=false",
+            "app.release.number=3800.4.0-rel.40+d78544e",
+            "db.product.name=PostgreSQL",
+            "java.version=11.0.4",
+            "java.default.locale=en",
+            "os.name=Linux",
+        )) + "\n"
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("imsmanifest.xml", manifest_xml)
+            z.writestr("res00001.dat", pool_xml)
+            z.writestr("res00002.dat", context_xml)
+            z.writestr(".bb-package-info", info)
+        return buf.getvalue()
+
+
+def pool_package(questions: list, title: str, points: float = 1.0,
+                 target: str = "ultra") -> tuple[bytes, dict]:
+    """Build the pool zip from valid questions. Returns (zip bytes, errors by
+    question index) so the caller can report questions that were left out."""
+    writer = PoolWriter(title, points)
+    errors: dict[int, str] = {}
+    allowed = ULTRA_TYPES if target == "ultra" else ORIGINAL_TYPES
+    for i, q in enumerate(questions):
+        if not q.valid:
+            continue
+        if q.type is QType.SHORT and target == "ultra":
+            q.note = "Short answer written as an Essay (Ultra has no short response type)."
+            q = Question(raw=q.raw, line=q.line, type=QType.ESSAY, number=q.number, text=q.text,
+                         answers=q.answers, sample=q.sample)
+        if q.type not in allowed:
+            errors[i] = (f"Blackboard Ultra question banks do not accept {q.type.value} questions "
+                         "on import; use --target original or create it in the editor.")
+            continue
+        if q.type is QType.MATCH and any(not (a.text and a.match) for a in q.answers):
+            errors[i] = "Matching pairs need both sides for a Blackboard pool."
+            continue
+        try:
+            writer.add(q)
+        except ValueError as e:
+            errors[i] = str(e)
+    return writer.package(), errors
+
+
+# --------------------------------------------------------------------------
 # Input loading: plain text, Word (.docx read directly), other formats via
 # textutil (macOS) or pandoc
 # --------------------------------------------------------------------------
@@ -828,9 +1243,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("input", help="question text file, .docx, or - for stdin")
-    ap.add_argument("-o", "--output", help="output file (default: <input>_<target>.txt)")
+    ap.add_argument("-o", "--output", help="output file (default: <input>_<target>.txt or .zip)")
     ap.add_argument("--target", choices=["ultra", "original"], default="ultra",
                     help="Blackboard course view the file is for (default: ultra)")
+    ap.add_argument("--format", choices=["txt", "pool"], default="txt",
+                    help="txt: tab-delimited file for 'Upload questions from file' in a test; "
+                         "pool: zip package for 'Import' on the Question Banks page (default: txt)")
+    ap.add_argument("--points", type=float, default=1.0,
+                    help="points per question stored in a pool package (default: 1)")
     ap.add_argument("--name", help="quiz name; used for the default output file name")
     ap.add_argument("--check", action="store_true", help="validate and report only; write nothing")
     ap.add_argument("--allow-invalid", action="store_true",
@@ -854,7 +1274,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("No questions found in the input.", file=sys.stderr)
         return 1
 
-    print(f"bbquiz {__version__} - target: {args.target}", file=sys.stderr)
+    pool_bytes = b""
+    if args.format == "pool":
+        stem = "quiz" if args.input == "-" else os.path.splitext(os.path.basename(args.input))[0]
+        pool_bytes, write_errors = pool_package(questions, args.name or stem, args.points, args.target)
+
+    print(f"bbquiz {__version__} - target: {args.target}, format: {args.format}", file=sys.stderr)
     report(questions, write_errors, args.target, sys.stderr)
     failed = sum(1 for q in questions if not q.valid) + len(write_errors)
 
@@ -865,7 +1290,7 @@ def main(argv: Optional[list[str]] = None) -> int:
               "the valid ones).", file=sys.stderr)
         return 1
 
-    ext = ".txt"
+    ext = ".zip" if args.format == "pool" else ".txt"
     if args.output:
         out_path = args.output
     else:
@@ -876,11 +1301,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         out_dir = "." if args.input == "-" else os.path.dirname(os.path.abspath(args.input))
         out_path = os.path.join(out_dir, base + ext)
 
-    body = "\n".join(records)              # no trailing blank line: Blackboard rejects it
-    newline = "\n" if args.lf else "\r\n"
-    encoding = "utf-8-sig" if args.bom else "utf-8"
-    with open(out_path, "w", encoding=encoding, newline=newline) as fh:
-        fh.write(body)
+    if args.format == "pool":
+        if failed:
+            # rebuild without the failed questions
+            pool_bytes, _ = pool_package([q for i, q in enumerate(questions)
+                                          if q.valid and i not in write_errors],
+                                         args.name or os.path.splitext(os.path.basename(out_path))[0],
+                                         args.points, args.target)
+        with open(out_path, "wb") as fh:
+            fh.write(pool_bytes)
+        records = [q for i, q in enumerate(questions) if q.valid and i not in write_errors]
+    else:
+        body = "\n".join(records)              # no trailing blank line: Blackboard rejects it
+        newline = "\n" if args.lf else "\r\n"
+        encoding = "utf-8-sig" if args.bom else "utf-8"
+        with open(out_path, "w", encoding=encoding, newline=newline) as fh:
+            fh.write(body)
     print(f"Wrote {len(records)} question(s) to {out_path}", file=sys.stderr)
     return 1 if failed else 0
 

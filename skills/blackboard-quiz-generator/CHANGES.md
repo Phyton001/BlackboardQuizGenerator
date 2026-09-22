@@ -57,7 +57,11 @@ Christian University; the skill is GPL v3 too.
 - `--check` validation mode, `--target ultra|original`, stdin input, a unit-test suite,
   and a SKILL.md so Claude can drive the whole conversion from a Word document.
 
-## Not carried over
-
-- The Blackboard **pool package** (zip of XML) download, which is Original-only and
-  superseded by the question upload.
+- **Question bank package output** (`--format pool`). The original's "Download
+  Question Pool" wrote the Blackboard 6 era `POOL` XML. The skill writes the current
+  export package (`assessment/x-bb-qti-pool` with manifest and package info), which is
+  what Ultra's Question Banks page imports, and covers MC, MA, TF, essay, short
+  response, fill in the blank, fill in multiple blanks, matching, numeric, ordering
+  and jumbled sentence. Structure follows Blackboard exports as documented by the
+  MIT-licensed BlackboardQuizMaker (Marcus Bannerman) and bbquiz (University of
+  Bristol) projects.

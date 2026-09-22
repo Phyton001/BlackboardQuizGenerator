@@ -12,14 +12,26 @@
 7. Review each question once. Blackboard skips any row it could not read without
    altering the others, so compare the count with the script's "N of N ready" line.
 
+## Ultra: import a question bank package (`--format pool`)
+
+1. Course Content > Details & Actions > **Manage banks**.
+2. **+** > **Import** > **from file** (not the QTI 2.1 option). Choose the `.zip` the
+   script wrote. A bank named after `--name` appears; refresh if the list has not
+   updated yet. Blackboard emails a log when the import finishes.
+3. Open the bank and spot-check one question of each type. An exclamation icon on the
+   bank means one or more questions were dropped as unsupported.
+4. Points per question were set by `--points`; the question pool in the test can still
+   override them.
+
 ## Ultra: question banks with a random draw
 
 Ultra's "question bank" is what Original called a pool; Ultra's "question pool" is the
 random draw inside a test.
 
-1. Course Content > Details & Actions > **Manage banks** > **+** > **New**. Title it,
-   save, then inside the bank **+** > **Upload questions from file**. One bank per
-   upload file. Point values set here are ignored; they are set in the test.
+1. If you used `--format txt` instead: Course Content > Details & Actions > **Manage
+   banks** > **+** > **New**, title it, save, then inside the bank **+** > **Upload
+   questions from file** (if that menu has no upload option on your installation,
+   use `--format pool` above, or the fallback at the end).
 2. In the test, **+** > **Add question pool** > **Filter** > tick the bank > select the
    questions > **Add Questions**. Set **Number of questions to display** and **Points
    per question** (one value for the whole pool), then **Save**. Repeat per bank.
