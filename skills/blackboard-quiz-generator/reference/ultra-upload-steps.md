@@ -12,8 +12,26 @@
 7. Review each question once. Blackboard skips any row it could not read without
    altering the others, so compare the count with the script's "N of N ready" line.
 
-To build a reusable pool instead: Course Content > Question Banks (or the test's
-Reuse questions menu) and use the same **Upload questions from file** option.
+## Ultra: question banks with a random draw
+
+Ultra's "question bank" is what Original called a pool; Ultra's "question pool" is the
+random draw inside a test.
+
+1. Course Content > Details & Actions > **Manage banks** > **+** > **New**. Title it,
+   save, then inside the bank **+** > **Upload questions from file**. One bank per
+   upload file. Point values set here are ignored; they are set in the test.
+2. In the test, **+** > **Add question pool** > **Filter** > tick the bank > select the
+   questions > **Add Questions**. Set **Number of questions to display** and **Points
+   per question** (one value for the whole pool), then **Save**. Repeat per bank.
+3. Check the test summary shows the intended question count and total points, turn
+   on **Randomize the order of answer options** if no option uses positional wording
+   ("all of the above", "A and B only"), then verify in Student Preview.
+
+Partial credit exists only on multiple answer and matching questions in Ultra.
+
+Fallback if a bank's **+** menu has no upload option: create a hidden test per file,
+upload into it, and filter the question pool on that test instead. Blackboard blocks
+deleting a source test while a pool draws from it, so keep it hidden.
 
 ## Original course view
 
