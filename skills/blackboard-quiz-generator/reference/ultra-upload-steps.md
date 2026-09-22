@@ -14,6 +14,8 @@
 
 ## Ultra: import a question bank package (`--format pool`)
 
+Confirmed working in Blackboard Ultra on 22 September 2026 (MC and TF banks).
+
 1. Course Content > Details & Actions > **Manage banks**.
 2. **+** > **Import** > **from file** (not the QTI 2.1 option). Choose the `.zip` the
    script wrote. A bank named after `--name` appears; refresh if the list has not
