@@ -156,3 +156,7 @@ QuizParser/.vs/QuizParseLibrary/v15/Server/sqlite3/storage.ide
 QuizParser/.vs/QuizParseLibrary/v16/Server/sqlite3/storage.ide
 QuizParser/.vs/QuizParseLibrary/v16/Server/sqlite3/storage.ide-shm
 QuizParser/.vs/QuizParseLibrary/v16/Server/sqlite3/storage.ide-wal
+
+__pycache__/
+*.pyc
+.DS_Store

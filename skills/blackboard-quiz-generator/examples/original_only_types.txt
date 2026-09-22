@@ -1,0 +1,23 @@
+order 1. Order the planets from closest to the sun to farthest:
+Mercury
+Earth
+Mars
+Jupiter
+
+short 2. Name one cause of the French Revolution.
+Financial crisis and food shortages.
+
+file 3. Upload your completed lab report.
+
+opinion 4. The course workload was reasonable.
+
+jumbled 5. The [a] jumped over the [b] dog.
+a. fox
+b. lazy
+-. quick
+
+quizbowl 6. He delivered the Gettysburg Address.
+w. Who
+w. Which president
+p. Lincoln
+p. Abraham Lincoln
